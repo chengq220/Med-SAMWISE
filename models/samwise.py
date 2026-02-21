@@ -102,7 +102,7 @@ class SAMWISE(nn.Module):
                         anchor_mem_dict = self.compute_mask_mem_dict(current_vision_feats, init_mask, backbone_output.feat_sizes)
                         anchor_idx = -abs(memory_idx + 1)
                         anchor_entry = {anchor_idx: anchor_mem_dict}
-                        cur_memory = {**anchor_mem_dict, **self.memory_bank} # concat the memory banks
+                        cur_memory = {**anchor_entry, **self.memory_bank} # concat the memory banks
                 except (KeyError, IndexError, TypeError):
                     pass
                     
