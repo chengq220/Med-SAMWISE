@@ -12,7 +12,7 @@ import py3_wget
 from fairseq.models.roberta import RobertaModel
 from models.model_utils import BackboneOutput, DecoderOutput, get_same_object_labels
 from transformers import RobertaTokenizerFast
-import torch.functional as F
+import torch.nn.functional as F
 
 
 class SAMWISE(nn.Module):
@@ -55,19 +55,17 @@ class SAMWISE(nn.Module):
         self.fusion_stages = fusion_stages
         self.image_size = image_size
 
-    def forward(self, samples, captions, targets, anchor = None):
+    def forward(self, samples, captions, obj_classes, targets, anchor_list = None):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels
                - captions: list[str]
+               - obj_classes: list[int]
                - targets:  list[dict]; during training contains masks, during inference frame Id info
-               - anchor: optional anchor masks of type dict((frame idx, cls), tensor.shape[1 x h x w])
+               - anchor: optional anchor masks of type list[dict(frame idx, cls), tensor.shape[1 x h x w])]
             It returns a dict with the following elements:
                - "pred_masks": Shape = [batch_size x num_queries x out_h x out_w]
         """
-
-        # process anchor masks
-        _ = self.preprocess_anchor(anchor)
 
         # samples: tensor B*T, C, H, W
         backbone_output: BackboneOutput = self.compute_backbone_output(samples, captions)
@@ -75,16 +73,21 @@ class SAMWISE(nn.Module):
         outputs = {"masks": []}
 
         for video_record in range(B):
+            cls = obj_classes[video_record]
             if self.training or T==1: # T == 1 for pre-training, no propagation from memory bank
                 self.perm_bank, self.memory_bank = {}, {}
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
                 self.perm_bank, self.memory_bank = {}, {}
 
+            anchor_cur = anchor_list[video_record]
+            _ = self.preprocess_anchor(anchor_cur)
+            
             for frame_idx in range(T):
                 idx = video_record * T + frame_idx
                 # use relative IDX in the clip
                 if self.training or T==1:  # T == 1 for pre-training, no propagation from memory bank
                     memory_idx = frame_idx
+                    
                 # use absolute IDX in the video
                 else:
                     memory_idx = targets[0]['frame_ids'][frame_idx]
@@ -92,10 +95,19 @@ class SAMWISE(nn.Module):
                 current_vision_feats = backbone_output.get_current_feats(idx)
                 
                 # Inject persistent memory into memory bank
-                # extend_banks = self.concat_memory_banks(self.memory_bank, self.perm_bank)
+                cur_memory = self.memory_bank
+                try:
+                    if self.perm_bank[memory_idx][cls].any():
+                        init_mask = self.perm_bank[memory_idx][cls]
+                        anchor_mem_dict = self.compute_mask_mem_dict(current_vision_feats, init_mask, backbone_output.feat_sizes)
+                        anchor_idx = -abs(memory_idx + 1)
+                        anchor_entry = {anchor_idx: anchor_mem_dict}
+                        cur_memory = {**anchor_mem_dict, **self.memory_bank} # concat the memory banks
+                except (KeyError, IndexError, TypeError):
+                    pass
+                    
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  self.memory_bank) 
-
+                                                                                  cur_memory) 
                 mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes) 
                 self.memory_bank[memory_idx] = mem_dict_w_mem
                 outputs["masks"].append(decoder_out_w_mem.masks)
@@ -106,23 +118,23 @@ class SAMWISE(nn.Module):
         else:
             return {"pred_masks": masks.squeeze(1)}
 
-    def preprocess_anchor(self, anchors):
-        if(anchors):
-            for (f_idx, cls), mask in anchors.items():
+    def preprocess_anchor(self, anchor):
+        if(anchor):
+            for (f_idx, cls), mask in anchor.items():
                 if self.training: 
                     f_idx = 0
                 if f_idx not in self.perm_bank:
                     self.perm_bank[f_idx] = {}
                 self.perm_bank[f_idx][cls] = mask
 
-    def compute_perm_mask_mem_dict(self, vision_feats, mask, feat_sizes):
+    def compute_mask_mem_dict(self, vision_feats, mask, feat_sizes):
         if mask.dim() == 2:
             mask = mask.unsqueeze(0).unsqueeze(0)
         elif mask.dim() == 3:
             mask = mask.unsqueeze(0)
         
         if mask.shape[-2:] != self.image_size:
-            mask = F.interpolate(mask.float(), size=self.image_size, mode='bilinear')
+            mask = F.interpolate(mask.float(), size=self.image_size, mode='bilinear').to(vision_feats[0].device)
         
         with torch.no_grad():
             maskmem_features, maskmem_pos_enc = self.sam._encode_new_memory(
@@ -143,13 +155,15 @@ class SAMWISE(nn.Module):
             "obj_ptr": obj_ptr,
             "is_anchor": True
         }
-        
-        return memory_entry
 
-    @staticmethod
-    def concat_memory_banks(mem_bank, perm_bank):
-        cat_bank = mem_bank
-        return cat_bank
+        # print("=== Memory Dictionary Shapes ===")
+        # print(f"maskmem_features: {maskmem_features.shape}")
+        # print(f"len pos_enc: {len(maskmem_pos_enc)}")
+        # for i in range(len(maskmem_pos_enc)):
+        #     print(f"maskmem_pos_enc: {maskmem_pos_enc[i].shape}")
+        # print(f"pred_masks: {low_res_logits.shape}")
+        # print(f"obj_ptr: {obj_ptr.shape}")
+        return memory_entry
 
     @staticmethod
     def preprocess_visual_features(samples, image_size):
@@ -232,6 +246,7 @@ class SAMWISE(nn.Module):
             "pred_masks": decoder_out.low_res_masks,
             "obj_ptr": decoder_out.obj_ptr,
         }
+        
         return memory_dict
     
     # =======================================================

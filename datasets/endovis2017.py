@@ -162,6 +162,7 @@ class EndoVis2017Dataset(Dataset):
                     'boxes': boxes,
                     'size': torch.as_tensor([int(h), int(w)]),
                     'caption': cap,
+                    'cls': cls
                 }
 
                 imgs, target = self._transforms(imgs, target)
