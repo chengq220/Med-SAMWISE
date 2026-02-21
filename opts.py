@@ -45,16 +45,6 @@ def get_args_parser():
     parser.add_argument('--fusion_stages', default=[1,2,3], nargs='+', type=int,
                         help="Fusion stages")
 
-
-    # Conditional Memory Encoder (CME) settings
-    parser.add_argument('--use_cme_head', default=False, action='store_true',
-                        help="Use Conditional Memory Encoder (CME)")
-    parser.add_argument('--switch_mem', default='reweight', type=str, choices=['all_mask', 'reweight', 'avg'],
-                        help="Memory switch strategy")
-    parser.add_argument('--cme_decision_window', default=4, type=int,
-                        help="Minimum number of frames considered between consecutive CME decisions")
-
-
     # dataset settings
     parser.add_argument('--dataset_file', default='endovis2017', type=str,
                         help="Dataset to use: ['endovis2017', 'endovis2018']")

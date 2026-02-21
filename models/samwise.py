@@ -9,7 +9,6 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 import os
 import py3_wget
-from models.conditional_memory_encoder import ConditionalMemoryEncoder
 from fairseq.models.roberta import RobertaModel
 from models.model_utils import BackboneOutput, DecoderOutput, get_same_object_labels
 from transformers import RobertaTokenizerFast
@@ -24,7 +23,6 @@ class SAMWISE(nn.Module):
                  fusion_stages,
                  image_size,
                  sam,
-                 conditional_memory_encoder,
                  adapter_dim,
                  args):
         super().__init__()
@@ -32,7 +30,7 @@ class SAMWISE(nn.Module):
         self.text_encoder = text_encoder
         self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
         self.sam = sam
-        self.conditional_memory_encoder = conditional_memory_encoder
+        # self.conditional_memory_encoder = conditional_memory_encoder
         if args.motion_prompt: # switch out the motion prompt to descriptor
             # load nlp dict to identify verbs
             self.nlp_dict = spacy.load('en_core_web_sm')
@@ -45,30 +43,30 @@ class SAMWISE(nn.Module):
                                         in_channels_vis=image_encoder_embed_dim[fusion_stages[i]-1],
                                         in_channels_txt=text_encoder_embed_dim,
                                         adapter_channels=adapter_dim,
-                                        HSA_patch_size=args.HSA_patch_size[i] if len(args.HSA_patch_size)>1 else args.HSA_patch_size[0],
+                                        HSA_patch_size=args.HSA_patch_size[i] if len(args.HSA_patch_size) > 1 else args.HSA_patch_size[0],
                                         args=args))
 
         self.memory_bank = {} # to store all frames memory
-
+        self.perm_bank = {} # to store frames to persist throughout clip/video
+ 
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
         self.fusion_stages = fusion_stages
         self.image_size = image_size
 
-        self.use_cme_head = args.use_cme_head
-        self.cme_decision_window = args.cme_decision_window # minimum number of frames between each CME application
-        self.switch_mem = args.switch_mem
-
-
-    def forward(self, samples, captions, targets):
+    def forward(self, samples, captions, targets, anchor = None):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels
                - captions: list[str]
                - targets:  list[dict]; during training contains masks, during inference frame Id info
+               - anchor: optional anchor masks of type dict((frame idx, cls), tensor.shape[1 x h x w])
             It returns a dict with the following elements:
                - "pred_masks": Shape = [batch_size x num_queries x out_h x out_w]
         """
+
+        # process anchor masks
+        _ = self.preprocess_anchor(anchor)
 
         # samples: tensor B*T, C, H, W
         backbone_output: BackboneOutput = self.compute_backbone_output(samples, captions)
@@ -77,9 +75,9 @@ class SAMWISE(nn.Module):
 
         for video_record in range(B):
             if self.training or T==1: # T == 1 for pre-training, no propagation from memory bank
-                self.memory_bank, self.last_frame_cme_applied = {}, 0
+                self.perm_bank, self.memory_bank = {}, {}
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
-                self.memory_bank, self.last_frame_cme_applied = {}, 0
+                self.perm_bank, self.memory_bank = {}, {}
 
             for frame_idx in range(T):
                 idx = video_record * T + frame_idx
@@ -91,35 +89,15 @@ class SAMWISE(nn.Module):
                     memory_idx = targets[0]['frame_ids'][frame_idx]
 
                 current_vision_feats = backbone_output.get_current_feats(idx)
+                
+                # Inject persistent memory into memory bank
+                concat_banks = self.concat_memory_banks(self.memory_bank, self.perm_bank)
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  self.memory_bank)
-
-                if self.use_cme_head:
-                    # wait at least cme_decision_window frames between 2 CME applications
-                    if memory_idx - self.last_frame_cme_applied >= self.cme_decision_window-1 and memory_idx>self.cme_decision_window:
-                        # memory-less prediction
-                        decoder_out_no_mem_cme: DecoderOutput = self.compute_decoder_out_no_mem(backbone_output, idx)
-                        pred_cme_logits = self.conditional_memory_encoder(decoder_out_w_mem.obj_ptr.detach(),
-                                                                          decoder_out_no_mem_cme.early_obj_ptr.detach())
-
-                        if pred_cme_logits.argmax().item() == 1 and not self.training:  # not training and switch
-                            decoder_out_w_mem = self.apply_decision(decoder_out_w_mem, decoder_out_no_mem_cme)
-                            self.last_frame_cme_applied = memory_idx
-
-                        if self.training:
-                            # cme_label indicates whether memory features and memory-less features point to same object
-                            cme_label = get_same_object_labels(decoder_out_w_mem.masks.detach().cpu(),
-                                                               decoder_out_no_mem_cme.masks.detach().cpu(),
-                                                               decoder_out_no_mem_cme.object_score_logits.detach()).item()
-
-                            if 'pred_cme_logits' not in outputs:
-                                outputs['pred_cme_logits'] = []
-                                outputs["cme_label"] = []
-                            outputs["pred_cme_logits"].append(pred_cme_logits)
-                            outputs["cme_label"].append(cme_label)
+                                                                                  concat_banks) 
 
                 mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes)
                 self.memory_bank[memory_idx] = mem_dict_w_mem
+                print(decoder_out_w_mem.masks.shape)
                 outputs["masks"].append(decoder_out_w_mem.masks)
 
         masks = torch.cat(outputs["masks"])
@@ -128,6 +106,19 @@ class SAMWISE(nn.Module):
         else:
             return {"pred_masks": masks.squeeze(1)}
 
+    def preprocess_anchor(self, anchors):
+        if(anchors):
+            for (f_idx, cls), mask in anchors.items():
+                if self.training: 
+                    f_idx = 0
+                if f_idx not in self.perm_bank:
+                    self.perm_bank[f_idx] = {}
+                self.perm_bank[f_idx][cls] = mask
+
+    @staticmethod
+    def concat_memory_banks(mem_bank, perm_bank):
+        cat_bank = mem_bank
+        return cat_bank
 
     @staticmethod
     def preprocess_visual_features(samples, image_size):
@@ -454,8 +445,8 @@ def build_samwise(args):
     sam.load_state_dict(state_dict, strict=False)
     sam_embed_dim = cfg.model.image_encoder.neck.backbone_channel_list[::-1][1:]
 
-    # build Conditional Memory Encoder
-    conditional_memory_encoder = ConditionalMemoryEncoder(sam.hidden_dim)
+    # # build Conditional Memory Encoder
+    # conditional_memory_encoder = ConditionalMemoryEncoder(sam.hidden_dim)
 
     ## Samwise
     model = SAMWISE(
@@ -466,7 +457,6 @@ def build_samwise(args):
         fusion_stages=args.fusion_stages,
         image_size=sam.image_size,
         sam=sam,
-        conditional_memory_encoder=conditional_memory_encoder,
         adapter_dim= args.adapter_dim,
         args=args
     )
