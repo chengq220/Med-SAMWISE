@@ -12,6 +12,7 @@ import py3_wget
 from fairseq.models.roberta import RobertaModel
 from models.model_utils import BackboneOutput, DecoderOutput, get_same_object_labels
 from transformers import RobertaTokenizerFast
+import torch.functional as F
 
 
 class SAMWISE(nn.Module):
@@ -91,13 +92,12 @@ class SAMWISE(nn.Module):
                 current_vision_feats = backbone_output.get_current_feats(idx)
                 
                 # Inject persistent memory into memory bank
-                concat_banks = self.concat_memory_banks(self.memory_bank, self.perm_bank)
+                # extend_banks = self.concat_memory_banks(self.memory_bank, self.perm_bank)
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  concat_banks) 
+                                                                                  self.memory_bank) 
 
-                mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes)
+                mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes) 
                 self.memory_bank[memory_idx] = mem_dict_w_mem
-                print(decoder_out_w_mem.masks.shape)
                 outputs["masks"].append(decoder_out_w_mem.masks)
 
         masks = torch.cat(outputs["masks"])
@@ -114,6 +114,37 @@ class SAMWISE(nn.Module):
                 if f_idx not in self.perm_bank:
                     self.perm_bank[f_idx] = {}
                 self.perm_bank[f_idx][cls] = mask
+
+    def compute_perm_mask_mem_dict(self, vision_feats, mask, feat_sizes):
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        elif mask.dim() == 3:
+            mask = mask.unsqueeze(0)
+        
+        if mask.shape[-2:] != self.image_size:
+            mask = F.interpolate(mask.float(), size=self.image_size, mode='bilinear')
+        
+        with torch.no_grad():
+            maskmem_features, maskmem_pos_enc = self.sam._encode_new_memory(
+                current_vision_feats=vision_feats,
+                feat_sizes=feat_sizes,
+                pred_masks_high_res=mask, 
+                is_mask_from_pts=False
+            )
+        
+        low_res = F.interpolate(mask, size=(256, 256), mode='bilinear')
+        low_res_logits = (low_res * 2 - 1) * 10.0
+        obj_ptr = F.adaptive_avg_pool2d(maskmem_features, (1, 1)).flatten(1)
+        
+        memory_entry = {
+            "maskmem_features": maskmem_features,
+            "maskmem_pos_enc": maskmem_pos_enc,
+            "pred_masks": low_res_logits,
+            "obj_ptr": obj_ptr,
+            "is_anchor": True
+        }
+        
+        return memory_entry
 
     @staticmethod
     def concat_memory_banks(mem_bank, perm_bank):
@@ -175,7 +206,7 @@ class SAMWISE(nn.Module):
             current_vision_feats=current_vision_feats[-1:],
             current_vision_pos_embeds=current_vision_pos_embeds[-1:],
             feat_sizes=backbone_out.feat_sizes[-1:],
-            num_frames=memory_idx+1, # how many obj_ptr to take from mem
+            num_frames=memory_idx+1,
             memory_bank=memory_bank
         )
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
@@ -184,20 +215,7 @@ class SAMWISE(nn.Module):
             motion_inputs=backbone_out.motion_state[idx:idx+1] if self.motion_prompt else None,
             high_res_features=high_res_features,
         )
-        decoder_out.compute_mask(self.image_size, backbone_out.orig_size[idx])
-        return decoder_out
 
-    def compute_decoder_out_no_mem(self, backbone_out: BackboneOutput, idx: int):
-        current_vision_feats = backbone_out.get_current_feats(idx)
-        high_res_features = backbone_out.get_high_res_features(current_vision_feats)
-
-        pix_feat_no_mem = current_vision_feats[-1:][-1] + self.sam.no_mem_embed
-        pix_feat_no_mem = pix_feat_no_mem.permute(1, 2, 0).view(1, 256, 64, 64)
-        decoder_out: DecoderOutput = self.sam._forward_sam_heads(
-            backbone_features=pix_feat_no_mem,
-            text_inputs=backbone_out.state[idx:idx+1],
-            high_res_features=high_res_features,
-        )
         decoder_out.compute_mask(self.image_size, backbone_out.orig_size[idx])
         return decoder_out
 
