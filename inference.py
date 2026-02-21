@@ -142,14 +142,15 @@ def get_masks_id(masks_path, transform):
     frame_ids = []
     for mask in vos_path:
         frame_id = int(os.path.basename(mask).split('.')[0])
-        frame_ids.append(frame_id)
         obj_img = Image.open(mask).convert('L')
         obj_img = np.array(transform(obj_img))
         obj_id = np.unique(obj_img)
         for id in obj_id:
             if id not in obj_id_list and id != 0:
                 obj_id_list.append(id)
-        init_masks.append(torch.from_numpy(obj_img).long())
+                frame_ids.append(frame_id)
+                bin_mask = (obj_img == id)
+                init_masks.append(torch.from_numpy(bin_mask).long())
     return obj_id_list, frame_ids, init_masks
 
     
@@ -180,21 +181,20 @@ def inference(args, model, save_path_prefix, in_path):
     obj_logits = defaultdict(torch.Tensor)
     name = args.text_prompts[0]
     # For each expression
-    for id in obj_id_list:
-        text_prompt = endovis2018_category_verb_dict.get(id, "Ultrasound Probe scanning and visualizing internal structures")
+    for i, obj_id in enumerate(obj_id_list):
+        text_prompt = endovis2018_category_verb_dict.get(obj_id, "Ultrasound Probe scanning and visualizing internal structures")
 
         batch_anchor = [] # Batch size of 1 for inference
-        for idx in range(len(init_frames_mask)):
-            anchor = {}
-            key = (frame_indices[idx], id)
-            anchor[key] = init_frames_mask[idx]
-            batch_anchor.append(anchor)
+        anchor = {}
+        key = (frame_indices[i], obj_id)
+        anchor[key] = init_frames_mask[i]
+        batch_anchor.append(anchor)
 
-        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, id, batch_anchor, frames_folder, frames_list, ext)
-        obj_logits[id] = all_pred_logits
+        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, obj_id, batch_anchor, frames_folder, frames_list, ext)
+        obj_logits[obj_id] = all_pred_logits
             
-        save_visualize_path_dir = join(save_path_prefix, name, 'viz', in_path_folder, str(id))
-        save_mask_path_dir = join(save_path_prefix, name, "pred", in_path_folder, str(id))
+        save_visualize_path_dir = join(save_path_prefix, name, 'viz', in_path_folder, str(obj_id))
+        save_mask_path_dir = join(save_path_prefix, name, "pred", in_path_folder, str(obj_id))
         
         os.makedirs(save_visualize_path_dir, exist_ok=True)
         os.makedirs(save_mask_path_dir, exist_ok=True)
