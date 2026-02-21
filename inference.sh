@@ -8,8 +8,7 @@
 #     --text_prompts 'all' \
 #     --num_frames 8 \
 #     --threshold 0.5 \
-#     --HSA \
-#     --use_cme_head 
+#     --HSA 
 
 for seq in seq1 seq2 seq3 seq4 seq5 seq6 seq7 seq8 seq9 seq10; do
     python inference.py \

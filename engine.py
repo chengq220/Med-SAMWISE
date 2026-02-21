@@ -34,12 +34,12 @@ def train_one_epoch(model: torch.nn.Module,
         samples = samples.to(device)
         captions = [t["caption"] for t in targets]
         cls = [t["cls"] for t in targets]
-        init_frames =[targets[idx]["masks"][0] for idx in range(len(targets))] # batch_size of ( H x W ) 
+        init_frames_mask =[targets[idx]["masks"][0] for idx in range(len(targets))] # batch_size of ( H x W ) 
         batch_anchor = []
-        for idx in range(len(init_frames)):
+        for idx in range(len(init_frames_mask)):
             anchor = {}
             key = (0, cls[idx])
-            anchor[key] = init_frames[idx]
+            anchor[key] = init_frames_mask[idx]
             batch_anchor.append(anchor)
         outputs = model(samples, captions, cls, targets, batch_anchor)
         # saving mask during training to check what's being learned

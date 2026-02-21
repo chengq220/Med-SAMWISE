@@ -61,7 +61,7 @@ def main(args):
         model.load_state_dict(checkpoint['model'], strict=False)
 
     print('Start inference')
-    inference(args, model, save_path_prefix, input_path, args.text_prompts)
+    inference(args, model, save_path_prefix, input_path)
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -104,7 +104,7 @@ def apply_non_overlapping_constraints(pred_masks):
     pred_masks = torch.where(keep, pred_masks, torch.clamp(pred_masks, max=-10.0))
     return pred_masks
 
-def compute_masks(model, text_prompt, frames_folder, frames_list, ext):
+def compute_masks(model, text_prompt, cls_id, anchor_list, frames_folder, frames_list, ext):
     all_pred_masks = []
     all_pred_logits = []
     vd = VideoEvalDataset(frames_folder, frames_list, ext=ext)
@@ -119,7 +119,7 @@ def compute_masks(model, text_prompt, frames_folder, frames_list, ext):
         target = {"size": size, 'frame_ids': clip_frames_ids}
 
         with torch.no_grad():
-            outputs = model([imgs], [text_prompt], [target])
+            outputs = model([imgs], [text_prompt], [cls_id], [target], anchor_list)
         pred_masks = outputs["pred_masks"]  # [t, h, w]
         pred_masks = pred_masks.unsqueeze(0)
         pred_masks = F.interpolate(pred_masks, size=(origin_h, origin_w), mode='bilinear',
@@ -138,17 +138,22 @@ def compute_masks(model, text_prompt, frames_folder, frames_list, ext):
 def get_masks_id(masks_path, transform):
     vos_path = list(glob.glob(join(masks_path, '*.png')))
     obj_id_list = []
+    init_masks = []
+    frame_ids = []
     for mask in vos_path:
+        frame_id = int(os.path.basename(mask).split('.')[0])
+        frame_ids.append(frame_id)
         obj_img = Image.open(mask).convert('L')
-        obj_img = transform(obj_img)
+        obj_img = np.array(transform(obj_img))
         obj_id = np.unique(obj_img)
         for id in obj_id:
             if id not in obj_id_list and id != 0:
                 obj_id_list.append(id)
-    return obj_id_list
+        init_masks.append(torch.from_numpy(obj_img).long())
+    return obj_id_list, frame_ids, init_masks
 
     
-def inference(args, model, save_path_prefix, in_path, text_prompts):
+def inference(args, model, save_path_prefix, in_path):
     # load data
     if os.path.isfile(in_path) and not args.image_level:
         frames_folder, frames_list, ext = extract_frames_from_mp4(in_path)
@@ -165,8 +170,11 @@ def inference(args, model, save_path_prefix, in_path, text_prompts):
     model.eval()
     print(f'Begin inference on {len(frames_list)} frames')
 
-    transform = TF.Compose([TF.CenterCrop(args.max_size)])
-    obj_id_list = get_masks_id(args.mask_input, transform)
+    transform = TF.Compose([
+        TF.CenterCrop(args.max_size)
+    ])
+    obj_id_list, frame_indices, init_frames_mask = get_masks_id(args.mask_input, transform)
+
     print(f"Object IDs found in VOS masks: {obj_id_list}")
     in_path_folder = os.path.basename(in_path)
     obj_logits = defaultdict(torch.Tensor)
@@ -175,7 +183,14 @@ def inference(args, model, save_path_prefix, in_path, text_prompts):
     for id in obj_id_list:
         text_prompt = endovis2018_category_verb_dict.get(id, "Ultrasound Probe scanning and visualizing internal structures")
 
-        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, frames_folder, frames_list, ext)
+        batch_anchor = [] # Batch size of 1 for inference
+        for idx in range(len(init_frames_mask)):
+            anchor = {}
+            key = (frame_indices[idx], id)
+            anchor[key] = init_frames_mask[idx]
+            batch_anchor.append(anchor)
+
+        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, id, batch_anchor, frames_folder, frames_list, ext)
         obj_logits[id] = all_pred_logits
             
         save_visualize_path_dir = join(save_path_prefix, name, 'viz', in_path_folder, str(id))
@@ -267,7 +282,6 @@ def check_args(args):
     if not args.image_level: # it's video inference
         # set default args
         args.HSA = True
-        args.use_cme_head = False
         pretrained_model = 'pretrain/final_model_mevis.pth'
         pretrained_model_link = 'https://drive.google.com/file/d/1Molt2up2bP41ekeczXWQU-LWTskKJOV2/view?usp=sharing'
         print(f'Specified path is a video or folder with frames, using video-level configuration')
