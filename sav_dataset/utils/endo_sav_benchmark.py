@@ -109,7 +109,7 @@ class VideoEvaluator:
                 f"found more than 1 object in {gt_mask_path} "
                 "SA-V format assumes one object mask per png file."
             )
-            pred_array = pred_array == object_id
+            pred_array = pred_array > 0
 
         return gt_array, pred_array
 
