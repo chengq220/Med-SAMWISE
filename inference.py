@@ -180,7 +180,7 @@ def inference(args, model, save_path_prefix, in_path):
     in_path_folder = os.path.basename(in_path)
     obj_logits = defaultdict(torch.Tensor)
     name = args.text_prompts[0]
-    # For each expression
+    # For each object
     for i, obj_id in enumerate(obj_id_list):
         text_prompt = endovis2018_category_verb_dict.get(obj_id, "Ultrasound Probe scanning and visualizing internal structures")
 
@@ -211,7 +211,7 @@ def inference(args, model, save_path_prefix, in_path):
             source_img = Image.open(img_path).convert('RGBA') # PIL image
             source_img = transform(source_img)
 
-            source_img = vis_add_mask(source_img, all_pred_masks[t], color_list[id%len(color_list)])
+            source_img = vis_add_mask(source_img, all_pred_masks[t], color_list[obj_id%len(color_list)])
      
             save_visualize_path = join(save_visualize_path_dir, frame + '.png')
             source_img.save(save_visualize_path)
