@@ -100,9 +100,12 @@ class SAMWISE(nn.Module):
                     if self.perm_bank[memory_idx][cls].any():
                         init_mask = self.perm_bank[memory_idx][cls]
                         anchor_mem_dict = self.compute_mask_mem_dict(current_vision_feats, init_mask, backbone_output.feat_sizes)
-                        anchor_idx = -abs(memory_idx + 1)
-                        anchor_entry = {anchor_idx: anchor_mem_dict}
-                        cur_memory = {**anchor_entry, **self.memory_bank} # concat the memory banks
+                        if self.training:
+                            anchor_entry = {-1: anchor_mem_dict}
+                            cur_memory = {**anchor_entry, **self.memory_bank} # concat the memory banks
+                        else:
+                            anchor_entry = {memory_idx: anchor_mem_dict}
+                            cur_memory = {**self.memory_bank, **anchor_entry} # concat the memory banks
                 except (KeyError, IndexError, TypeError):
                     pass
                     
