@@ -69,7 +69,9 @@ class SAMWISE(nn.Module):
         """
 
         anchor_list, cls_mask = anchor_tuple
-        cls_mask = torch.stack(cls_mask)
+        # cls_mask will have B, 1, 3, H, W
+        cls_mask = torch.stack(cls_mask).unsqueeze(1).unsqueeze(1).float().repeat(1, 1, 3, 1, 1)
+        
         # samples: tensor B*T, C, H, W
         backbone_output: BackboneOutput = self.compute_backbone_output(samples, captions, cls_mask)
         B, T = backbone_output.B, backbone_output.T
@@ -103,12 +105,8 @@ class SAMWISE(nn.Module):
                     if self.perm_bank[memory_idx][cls].any():
                         init_mask = self.perm_bank[memory_idx][cls]
                         anchor_mem_dict = self.compute_mask_mem_dict(current_vision_feats, init_mask, backbone_output.feat_sizes)
-                        if self.training:
-                            anchor_entry = {-1: anchor_mem_dict}
-                            cur_memory = {**anchor_entry, **self.memory_bank} # concat the memory banks
-                        else:
-                            anchor_entry = {memory_idx: anchor_mem_dict}
-                            cur_memory = {**self.memory_bank, **anchor_entry} # concat the memory banks
+                        anchor_entry = {memory_idx: anchor_mem_dict}
+                        cur_memory = {**self.memory_bank, **anchor_entry} # concat the memory banks
                 except (KeyError, IndexError, TypeError):
                     pass
                 
@@ -189,18 +187,19 @@ class SAMWISE(nn.Module):
         return txt, attention_mask, input_ids
     
     def compute_backbone_output(self, samples, captions, mask):
-        mask, BT, orig_size = self.preprocess_visual_features(mask, self.image_size)
         samples, BT, orig_size = self.preprocess_visual_features(samples, self.image_size)
+        mask, _, _ = self.preprocess_visual_features(mask, self.image_size)
+        mask = mask.to(samples.device)
         txt, attention_mask, input_ids = self.preprocess_text_features(captions)
         B, T = BT
 
         if self.motion_prompt:
-            vis_outs, state, txt = self._early_fusion_stage(T, samples, txt, attention_mask)
+            vis_outs, state, txt = self._early_fusion_stage(T, samples, txt, attention_mask, mask)
             motion_prompts = self.extract_descriptor_prompts(captions, input_ids)
             motion_state = [txt_i[motion_prompts[i].bool()] for i, txt_i in enumerate(txt)]
             motion_state = torch.cat(motion_state).repeat_interleave(T, 0)
         else:
-            vis_outs, state = self._early_fusion_stage(T, samples, txt, attention_mask)
+            vis_outs, state = self._early_fusion_stage(T, samples, txt, attention_mask, mask)
             motion_state = torch.empty(1)
 
         # forward FPN
@@ -290,9 +289,10 @@ class SAMWISE(nn.Module):
                 x = layers[idx](x)
         return x
 
-    def _early_fusion_stage(self, T, samples, txt, attention_mask):
+    def _early_fusion_stage(self, T, samples, txt, attention_mask, mask):
         vis = self.sam.image_encoder.trunk.patch_embed(samples)
-        vis = vis + self.sam.image_encoder.trunk._get_pos_embed(vis.shape[1:3])
+        mask_vis = self.sam.image_encoder.trunk.patch_embed(mask)
+        vis = vis + mask_vis + self.sam.image_encoder.trunk._get_pos_embed(vis.shape[1:3])
         vis_outs = []
         fusion_stages_vis = [x+1 for x in self.fusion_stages_vis]
 
