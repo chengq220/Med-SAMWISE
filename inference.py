@@ -190,7 +190,7 @@ def inference(args, model, save_path_prefix, in_path):
         anchor[key] = init_frames_mask[i]
         batch_anchor.append(anchor)
 
-        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, obj_id, batch_anchor, frames_folder, frames_list, ext)
+        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, obj_id, (batch_anchor, [init_frames_mask[i]]), frames_folder, frames_list, ext)
         obj_logits[obj_id] = all_pred_logits
             
         save_visualize_path_dir = join(save_path_prefix, name, 'viz', in_path_folder, str(obj_id))
