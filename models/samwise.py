@@ -48,7 +48,8 @@ class SAMWISE(nn.Module):
                                         args=args))
 
         self.memory_bank = {} # to store all frames memory
-        self.perm_bank = {} # to store frames to persist throughout clip/video
+        self.perm_bank = {} # to store frames to persist throughout clip/video 
+        self.cls_mask = {} # direct access to mask associated with each class
  
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
@@ -75,9 +76,9 @@ class SAMWISE(nn.Module):
         for video_record in range(B):
             cls = obj_classes[video_record]
             if self.training or T==1: # T == 1 for pre-training, no propagation from memory bank
-                self.perm_bank, self.memory_bank = {}, {}
+                self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
-                self.perm_bank, self.memory_bank = {}, {}
+                self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
 
             anchor_cur = anchor_list[video_record]
             _ = self.preprocess_anchor(anchor_cur)
@@ -108,9 +109,10 @@ class SAMWISE(nn.Module):
                             cur_memory = {**self.memory_bank, **anchor_entry} # concat the memory banks
                 except (KeyError, IndexError, TypeError):
                     pass
-                    
+                
+                guide_mask = self.cls_mask[cls]
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  cur_memory) 
+                                                                                  cur_memory, guide_mask) 
                 mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes) 
                 self.memory_bank[memory_idx] = mem_dict_w_mem
                 outputs["masks"].append(decoder_out_w_mem.masks)
@@ -129,6 +131,7 @@ class SAMWISE(nn.Module):
                 if f_idx not in self.perm_bank:
                     self.perm_bank[f_idx] = {}
                 self.perm_bank[f_idx][cls] = mask
+                self.cls_mask[cls] = mask
 
     def compute_mask_mem_dict(self, vision_feats, mask, feat_sizes):
         if mask.dim() == 2:
@@ -159,13 +162,6 @@ class SAMWISE(nn.Module):
             "is_anchor": True
         }
 
-        # print("=== Memory Dictionary Shapes ===")
-        # print(f"maskmem_features: {maskmem_features.shape}")
-        # print(f"len pos_enc: {len(maskmem_pos_enc)}")
-        # for i in range(len(maskmem_pos_enc)):
-        #     print(f"maskmem_pos_enc: {maskmem_pos_enc[i].shape}")
-        # print(f"pred_masks: {low_res_logits.shape}")
-        # print(f"obj_ptr: {obj_ptr.shape}")
         return memory_entry
 
     @staticmethod
@@ -211,7 +207,7 @@ class SAMWISE(nn.Module):
         out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state, motion_state)
         return out
 
-    def compute_decoder_out_w_mem(self, backbone_out: BackboneOutput, idx: int, memory_idx: int, memory_bank: dict):
+    def compute_decoder_out_w_mem(self, backbone_out: BackboneOutput, idx: int, memory_idx: int, memory_bank: dict, mask: torch.tensor):
         current_vision_feats = backbone_out.get_current_feats(idx)
         current_vision_pos_embeds = backbone_out.get_current_pos_embeds(idx)
         # take only the highest res feature map
@@ -224,7 +220,8 @@ class SAMWISE(nn.Module):
             current_vision_pos_embeds=current_vision_pos_embeds[-1:],
             feat_sizes=backbone_out.feat_sizes[-1:],
             num_frames=memory_idx+1,
-            memory_bank=memory_bank
+            memory_bank=memory_bank,
+            guide_mask=mask
         )
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
             backbone_features=pix_feat_with_mem,

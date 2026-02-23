@@ -39,14 +39,24 @@ endovis2017_category_rev_verb_dict = {
     7: "Ultrasound Probe scanning and imaging"
 }
 
+# endovis2018_category_verb_dict = {
+#     1: "Dissecting and coagulating tissue with Bipolar Forceps",
+#     2: "Stabilizing and retracting tissue with Prograsp Forceps", 
+#     3: "Driving needle and suturing with two Large Needle Drivers",
+#     4: "Cutting and dissecting tissue with Monopolar Curved Scissors",
+#     5: "Ultrasound Probe scanning and visualizing internal structures",
+#     6: "Suction Instrument aspirating fluids and clearing surgical field",
+#     7: "Applying clips to vessels with Clip Applier"
+# }
+
 endovis2018_category_verb_dict = {
-    1: "Dissecting and coagulating tissue with Bipolar Forceps",
-    2: "Stabilizing and retracting tissue with Prograsp Forceps", 
-    3: "Driving needle and suturing with Large Needle Driver",
-    4: "Cutting and dissecting tissue with Monopolar Curved Scissors",
-    5: "Ultrasound Probe scanning and visualizing internal structures",
-    6: "Suction Instrument aspirating fluids and clearing surgical field",
-    7: "Applying clips to vessels with Clip Applier"
+    1: "One Bipolar Forceps - thin curved instrument with two prongs at tip",
+    2: "One Prograsp Forceps - thicker grasping instrument with serrated jaws", 
+    3: "Two Large Needle Drivers - curved instruments with short robust jaws for needle holding",
+    4: "One Monopolar Curved Scissors - curved scissor blades with hook tip for cutting",
+    5: "One Ultrasound Probe - T-shaped probe with flat transducer head",
+    6: "One Suction Instrument - straight hollow tube with rounded tip and side holes",
+    7: "One Clip Applier - straight instrument with wider tip for applying surgical clips"
 }
 
 endovis2017_category_descriptor_dict = {
