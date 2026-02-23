@@ -49,27 +49,29 @@ class SAMWISE(nn.Module):
 
         self.memory_bank = {} # to store all frames memory
         self.perm_bank = {} # to store frames to persist throughout clip/video 
-        self.cls_mask = {} # direct access to mask associated with each class
+        self.cls_mask = None # direct access to mask associated with each class
  
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
         self.fusion_stages = fusion_stages
         self.image_size = image_size
 
-    def forward(self, samples, captions, obj_classes, targets, anchor_list = None):
+    def forward(self, samples, captions, obj_classes, targets, anchor_tuple = None):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels
                - captions: list[str]
                - obj_classes: list[int]
                - targets:  list[dict]; during training contains masks, during inference frame Id info
-               - anchor: optional anchor masks of type list[dict(frame idx, cls), tensor.shape[1 x h x w])]
+               - anchor: optional anchor masks of type tuple(list[dict(frame idx, cls), tensor.shape[1 x h x w])], [masks])
             It returns a dict with the following elements:
                - "pred_masks": Shape = [batch_size x num_queries x out_h x out_w]
         """
 
+        anchor_list, cls_mask = anchor_tuple
+        cls_mask = torch.stack(cls_mask)
         # samples: tensor B*T, C, H, W
-        backbone_output: BackboneOutput = self.compute_backbone_output(samples, captions)
+        backbone_output: BackboneOutput = self.compute_backbone_output(samples, captions, cls_mask)
         B, T = backbone_output.B, backbone_output.T
         outputs = {"masks": []}
 
@@ -82,7 +84,7 @@ class SAMWISE(nn.Module):
 
             anchor_cur = anchor_list[video_record]
             _ = self.preprocess_anchor(anchor_cur)
-            
+
             for frame_idx in range(T):
                 idx = video_record * T + frame_idx
                 # use relative IDX in the clip
@@ -110,9 +112,8 @@ class SAMWISE(nn.Module):
                 except (KeyError, IndexError, TypeError):
                     pass
                 
-                guide_mask = self.cls_mask[cls]
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  cur_memory, guide_mask) 
+                                                                                  cur_memory) 
                 mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes) 
                 self.memory_bank[memory_idx] = mem_dict_w_mem
                 outputs["masks"].append(decoder_out_w_mem.masks)
@@ -131,7 +132,7 @@ class SAMWISE(nn.Module):
                 if f_idx not in self.perm_bank:
                     self.perm_bank[f_idx] = {}
                 self.perm_bank[f_idx][cls] = mask
-                self.cls_mask[cls] = mask
+                # self.cls_mask[cls] = mask
 
     def compute_mask_mem_dict(self, vision_feats, mask, feat_sizes):
         if mask.dim() == 2:
@@ -187,7 +188,8 @@ class SAMWISE(nn.Module):
         txt = x.transpose(0, 1)  # B x T x C -> T x B x C
         return txt, attention_mask, input_ids
     
-    def compute_backbone_output(self, samples, captions):
+    def compute_backbone_output(self, samples, captions, mask):
+        mask, BT, orig_size = self.preprocess_visual_features(mask, self.image_size)
         samples, BT, orig_size = self.preprocess_visual_features(samples, self.image_size)
         txt, attention_mask, input_ids = self.preprocess_text_features(captions)
         B, T = BT
@@ -207,7 +209,7 @@ class SAMWISE(nn.Module):
         out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state, motion_state)
         return out
 
-    def compute_decoder_out_w_mem(self, backbone_out: BackboneOutput, idx: int, memory_idx: int, memory_bank: dict, mask: torch.tensor):
+    def compute_decoder_out_w_mem(self, backbone_out: BackboneOutput, idx: int, memory_idx: int, memory_bank: dict):
         current_vision_feats = backbone_out.get_current_feats(idx)
         current_vision_pos_embeds = backbone_out.get_current_pos_embeds(idx)
         # take only the highest res feature map
@@ -221,7 +223,6 @@ class SAMWISE(nn.Module):
             feat_sizes=backbone_out.feat_sizes[-1:],
             num_frames=memory_idx+1,
             memory_bank=memory_bank,
-            guide_mask=mask
         )
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
             backbone_features=pix_feat_with_mem,

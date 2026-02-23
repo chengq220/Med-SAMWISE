@@ -15,7 +15,6 @@ class CMT_adapter(nn.Module):
                  args=None):
         super().__init__()
         self.adapter_channels = adapter_channels
-        print(in_channels_vis.shape)
         self.proj_vis_down = nn.Sequential(
             nn.Conv2d(in_channels_vis, adapter_channels, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(adapter_channels), nn.ReLU(True))
