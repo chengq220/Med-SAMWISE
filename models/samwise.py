@@ -304,10 +304,8 @@ class SAMWISE(nn.Module):
         mask_vis = mask_vis + self.sam.image_encoder.trunk._get_pos_embed(mask_vis.shape[1:3])
         
         mask_vis = mask_vis.repeat(vis.shape[0], 1, 1, 1)
-        combined = torch.cat([vis, mask_vis], dim=1)
-        fused_vis = self.mask_fuse(combined)
+        vis = self.mask_fuse(torch.cat([vis, mask_vis], dim=1))
         
-        # combine = torch.stack([vis, mask_vis])
         vis_outs = []
         fusion_stages_vis = [x+1 for x in self.fusion_stages_vis]
 
