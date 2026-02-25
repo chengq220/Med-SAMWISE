@@ -46,7 +46,14 @@ class SAMWISE(nn.Module):
                                         adapter_channels=adapter_dim,
                                         HSA_patch_size=args.HSA_patch_size[i] if len(args.HSA_patch_size) > 1 else args.HSA_patch_size[0],
                                         args=args))
-
+        self.mask_fuse = nn.Sequential(
+                    nn.Conv2d(512, 256, kernel_size=1, stride=1, padding=0, bias=False),
+                    nn.BatchNorm2d(256), 
+                    nn.ReLU(True), 
+                    nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0, bias=False),
+                    nn.BatchNorm2d(256),
+                    nn.ReLU(True)
+        )
         self.memory_bank = {} # to store all frames memory
         self.perm_bank = {} # to store frames to persist throughout clip/video 
         self.cls_mask = None # direct access to mask associated with each class
@@ -291,8 +298,16 @@ class SAMWISE(nn.Module):
 
     def _early_fusion_stage(self, T, samples, txt, attention_mask, mask):
         vis = self.sam.image_encoder.trunk.patch_embed(samples)
-        mask_vis = self.sam.image_encoder.trunk.patch_embed(mask)
-        vis = vis + mask_vis + self.sam.image_encoder.trunk._get_pos_embed(vis.shape[1:3])
+        vis = vis + self.sam.image_encoder.trunk._get_pos_embed(vis.shape[1:3])
+        
+        mask_vis = self.sam.image_encoder.trunk.patch_embed(mask) 
+        mask_vis = mask_vis + self.sam.image_encoder.trunk._get_pos_embed(mask_vis.shape[1:3])
+        
+        mask_vis = mask_vis.repeat(vis.shape[0], 1, 1, 1)
+        combined = torch.cat([vis, mask_vis], dim=1)
+        fused_vis = self.mask_fuse(combined)
+        
+        # combine = torch.stack([vis, mask_vis])
         vis_outs = []
         fusion_stages_vis = [x+1 for x in self.fusion_stages_vis]
 
@@ -302,7 +317,7 @@ class SAMWISE(nn.Module):
         fusion_txt.insert(0, 0)
         fusion_txt.insert(1,1)
         for i, (i_v, i_t) in enumerate(zip(fusion_vis[:-1], fusion_txt[:-1])):
-            vis = self.forw_layer_list(i_v, fusion_vis[i+1], self.sam.image_encoder.trunk.blocks, vis)
+            vis = self.forw_layer_list(i_v, fusion_vis[i+1], self.sam.image_encoder.trunk.blocks, fused_vis)
             txt = self.forw_layer_list(i_t, fusion_txt[i+1], self.text_encoder.model.encoder.sentence_encoder.layers, txt, attention_mask)
             if i in self.fusion_stages:
                 v = vis.clone()
