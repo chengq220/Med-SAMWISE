@@ -315,7 +315,7 @@ class SAMWISE(nn.Module):
         fusion_txt.insert(0, 0)
         fusion_txt.insert(1,1)
         for i, (i_v, i_t) in enumerate(zip(fusion_vis[:-1], fusion_txt[:-1])):
-            vis = self.forw_layer_list(i_v, fusion_vis[i+1], self.sam.image_encoder.trunk.blocks, fused_vis)
+            vis = self.forw_layer_list(i_v, fusion_vis[i+1], self.sam.image_encoder.trunk.blocks, vis)
             txt = self.forw_layer_list(i_t, fusion_txt[i+1], self.text_encoder.model.encoder.sentence_encoder.layers, txt, attention_mask)
             if i in self.fusion_stages:
                 v = vis.clone()
