@@ -36,6 +36,7 @@ def train_one_epoch(model: torch.nn.Module,
             anchor[key] = init_frames_mask[idx]
             batch_anchor.append(anchor)
         outputs = model(samples, captions, cls, targets, (batch_anchor, init_frames_mask))
+        
         # saving mask during training to check what's being learned
         save_mask = outputs["masks"][0].squeeze().detach().cpu().numpy()
         save_mask = save_mask.reshape(save_mask.shape[0], save_mask.shape[1]).astype('uint8') # np
@@ -68,7 +69,19 @@ def train_one_epoch(model: torch.nn.Module,
 
         if max_norm > 0:
             grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        else:
+            grad_total_norm = utils.get_total_grad_norm(model.parameters(), max_norm)
+
+        optimizer.step()
+        lr_scheduler.step()
+
+        metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(grad_norm=grad_total_norm)
 
 
-
-
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    
