@@ -30,8 +30,9 @@ class SAMWISE(nn.Module):
 
         self.text_encoder = text_encoder
         self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
+        # self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/stsb-roberta-base')
         self.sam = sam
-        if args.motion_prompt: # switch out the motion prompt to descriptor
+        if args.motion_prompt: 
             # load nlp dict to identify verbs
             self.nlp_dict = spacy.load('en_core_web_sm')
         self.motion_prompt = args.motion_prompt
@@ -55,7 +56,7 @@ class SAMWISE(nn.Module):
         )
         self.memory_bank = {} # to store all frames memory
         self.perm_bank = {} # to store frames to persist throughout clip/video 
-        self.cls_mask = None # direct access to mask associated with each class
+        # self.cls_mask = None # direct access to mask associated with each class
  
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
@@ -460,6 +461,10 @@ def build_samwise(args):
     roberta = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
     text_encoder_embed_dim = roberta.model.encoder.lm_head.dense.out_features
 
+    # Build sentence encoder
+    # text_encoder_embed_dim = model.encoder.layer[-1].output.dense.out_features
+    # text_encoder = AutoModel.from_pretrained('sentence-transformers/stsb-roberta-base')
+
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[args.sam2_version]
     if not os.path.isfile(sam2_weights):
         print(f"Downloading SAM2-{args.sam2_version}")
@@ -479,9 +484,6 @@ def build_samwise(args):
     sam.load_state_dict(state_dict, strict=False)
     sam_embed_dim = cfg.model.image_encoder.neck.backbone_channel_list[::-1][1:]
 
-    # # build Conditional Memory Encoder
-    # conditional_memory_encoder = ConditionalMemoryEncoder(sam.hidden_dim)
-
     ## Samwise
     model = SAMWISE(
         image_encoder_embed_dim=sam_embed_dim,
@@ -494,7 +496,6 @@ def build_samwise(args):
         adapter_dim= args.adapter_dim,
         args=args
     )
-
 
     # freeze all the weights except CMT adapter and Conditional Memory Encoder
     for param_name, param in model.named_parameters():
