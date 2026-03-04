@@ -63,7 +63,7 @@ class SAMWISE(nn.Module):
         self.fusion_stages = fusion_stages
         self.image_size = image_size
 
-    def forward(self, samples, captions, obj_classes=None, targets=None):
+    def forward(self, samples, captions, targets):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels

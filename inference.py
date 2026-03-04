@@ -104,7 +104,7 @@ def apply_non_overlapping_constraints(pred_masks):
     pred_masks = torch.where(keep, pred_masks, torch.clamp(pred_masks, max=-10.0))
     return pred_masks
 
-def compute_masks(model, text_prompt, cls_id, anchor_list, frames_folder, frames_list, ext):
+def compute_masks(model, text_prompt, frames_folder, frames_list, ext):
     all_pred_masks = []
     all_pred_logits = []
     vd = VideoEvalDataset(frames_folder, frames_list, ext=ext)
@@ -119,7 +119,7 @@ def compute_masks(model, text_prompt, cls_id, anchor_list, frames_folder, frames
         target = {"size": size, 'frame_ids': clip_frames_ids}
 
         with torch.no_grad():
-            outputs = model([imgs], [text_prompt], [cls_id], [target], anchor_list)
+            outputs = model([imgs], [text_prompt], [target])
         pred_masks = outputs["pred_masks"]  # [t, h, w]
         pred_masks = pred_masks.unsqueeze(0)
         pred_masks = F.interpolate(pred_masks, size=(origin_h, origin_w), mode='bilinear',
@@ -190,7 +190,7 @@ def inference(args, model, save_path_prefix, in_path):
         anchor[key] = init_frames_mask[i]
         batch_anchor.append(anchor)
 
-        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, obj_id, (batch_anchor, [init_frames_mask[i]]), frames_folder, frames_list, ext)
+        all_pred_masks, all_pred_logits = compute_masks(model, text_prompt, frames_folder, frames_list, ext)
         obj_logits[obj_id] = all_pred_logits
             
         save_visualize_path_dir = join(save_path_prefix, name, 'viz', in_path_folder, str(obj_id))
