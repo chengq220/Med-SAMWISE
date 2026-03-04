@@ -31,7 +31,6 @@ class SAMWISE(nn.Module):
         self.text_encoder = text_encoder
         self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
         self.sam = sam
-        # self.conditional_memory_encoder = conditional_memory_encoder
         if args.motion_prompt: # switch out the motion prompt to descriptor
             # load nlp dict to identify verbs
             self.nlp_dict = spacy.load('en_core_web_sm')
@@ -63,7 +62,7 @@ class SAMWISE(nn.Module):
         self.fusion_stages = fusion_stages
         self.image_size = image_size
 
-    def forward(self, samples, captions, obj_classes, targets):
+    def forward(self, samples, captions, obj_classes=None, targets=None):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels
@@ -81,7 +80,7 @@ class SAMWISE(nn.Module):
         outputs = {"masks": []}
 
         for video_record in range(B):
-            cls = obj_classes[video_record]
+            # cls = obj_classes[video_record]
             if self.training or T==1: # T == 1 for pre-training, no propagation from memory bank
                 self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
