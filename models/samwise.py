@@ -161,24 +161,26 @@ class SAMWISE(nn.Module):
         BT = (B, T)
         return samples, BT, orig_size
 
+    # def preprocess_text_features(self, captions):
+    #     batch_encoding_text = self.tokenizer(captions, add_special_tokens=True, padding=True)
+    #     input_ids = torch.tensor(batch_encoding_text['input_ids']).cuda()
+    #     attention_mask = torch.tensor(batch_encoding_text['attention_mask']).eq(0).cuda()
+    #     text_encoder = self.text_encoder.model.encoder.sentence_encoder
+    #     has_pads = (torch.tensor(input_ids.device.type == "xla") or attention_mask.any())
+    #     x, encoder_embedding = text_encoder.forward_embedding(input_ids, None)
+    #     x = x * (1 - attention_mask.unsqueeze(-1).type_as(x) * has_pads.type_as(x))
+    #     txt = x.transpose(0, 1)  # B x T x C -> T x B x C
+    #     return txt, attention_mask, input_ids
+    
     def preprocess_text_features(self, captions):
         batch_encoding_text = self.tokenizer(captions, add_special_tokens=True, padding=True)
         input_ids = torch.tensor(batch_encoding_text['input_ids']).cuda()
-        attention_mask = torch.tensor(batch_encoding_text['attention_mask']).eq(0).cuda()
-        text_encoder = self.text_encoder.model.encoder.sentence_encoder
-        has_pads = (torch.tensor(input_ids.device.type == "xla") or attention_mask.any())
-        x, encoder_embedding = text_encoder.forward_embedding(input_ids, None)
-        x = x * (1 - attention_mask.unsqueeze(-1).type_as(x) * has_pads.type_as(x))
-        txt = x.transpose(0, 1)  # B x T x C -> T x B x C
+        attention_mask = torch.tensor(batch_encoding_text['attention_mask']).cuda()
+        x = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
+        x = x.last_hidden_state
+        txt = x.transpose(0, 1)
         return txt, attention_mask, input_ids
     
-    def preprocess_text_features2(self, captions):
-        batch_encoding_text = self.tokenizer(captions, padding=True, truncation=True, return_tensors='pt')
-        input_ids = torch.tensor(batch_encoding_text['input_ids']).cuda()
-        attention_mask = torch.tensor(batch_encoding_text['attention_mask']).cuda()
-        txt = self.text_encoder(**batch_encoding_text)
-        x = txt.tranpose(0, 1)
-        return x, attention_mask, input_ids
     
     def compute_backbone_output(self, samples, captions):
         samples, BT, orig_size = self.preprocess_visual_features(samples, self.image_size)
@@ -446,12 +448,12 @@ def build_samwise(args):
         get_roberta_weights()
     
     # build text encoder
-    # roberta = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
-    # text_encoder_embed_dim = roberta.model.encoder.lm_head.dense.out_features
+    # text_encoder = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
+    # text_encoder_embed_dim = text_encoder.model.encoder.lm_head.dense.out_features
 
     # Build sentence encoder
-    text_encoder_embed_dim = model.encoder.layer[-1].output.dense.out_features
     text_encoder = AutoModel.from_pretrained('sentence-transformers/stsb-roberta-base')
+    text_encoder_embed_dim = text_encoder.encoder.layer[-1].output.dense.out_features
 
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[args.sam2_version]
     if not os.path.isfile(sam2_weights):
