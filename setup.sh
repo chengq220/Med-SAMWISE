@@ -16,7 +16,7 @@ rm endovis2018_new.tar
 # gdown --fuzzy "https://drive.google.com/file/d/1XTTdrPPy_nndbqd0_bX1eQBI2_hgCGMq/view?usp=sharing"
 # tar -xvf endovis2017.tar
 # rm endovis2017.tar
-# cd ..
+cd ..
 
 #Download pretrain-models
 mkdir pretrain
