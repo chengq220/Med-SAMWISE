@@ -9,10 +9,9 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 import os
 import py3_wget
-from models.conditional_memory_encoder import ConditionalMemoryEncoder
-from fairseq.models.roberta import RobertaModel
-from models.model_utils import BackboneOutput, DecoderOutput, get_same_object_labels
-from transformers import RobertaTokenizerFast
+from models.model_utils import BackboneOutput, DecoderOutput
+from transformers import AutoModel, AutoTokenizer
+import torch.nn.functional as F
 
 
 class SAMWISE(nn.Module):
@@ -24,15 +23,13 @@ class SAMWISE(nn.Module):
                  fusion_stages,
                  image_size,
                  sam,
-                 conditional_memory_encoder,
                  adapter_dim,
                  args):
         super().__init__()
 
         self.text_encoder = text_encoder
-        self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
+        self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/stsb-roberta-base')
         self.sam = sam
-        self.conditional_memory_encoder = conditional_memory_encoder
 
         # build Cross Modal Temporal adapter
         self.cmt_adapters = nn.ModuleList()
@@ -41,41 +38,47 @@ class SAMWISE(nn.Module):
                                         in_channels_vis=image_encoder_embed_dim[fusion_stages[i]-1],
                                         in_channels_txt=text_encoder_embed_dim,
                                         adapter_channels=adapter_dim,
-                                        HSA_patch_size=args.HSA_patch_size[i] if len(args.HSA_patch_size)>1 else args.HSA_patch_size[0],
+                                        HSA_patch_size=args.HSA_patch_size[i] if len(args.HSA_patch_size) > 1 else args.HSA_patch_size[0],
                                         args=args))
-
+        self.mask_fuse = nn.Sequential(
+                    nn.Conv2d(512, 256, kernel_size=1, stride=1, padding=0, bias=False),
+                    nn.BatchNorm2d(256), 
+                    nn.ReLU(True), 
+                    nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0, bias=False),
+                    nn.BatchNorm2d(256),
+                    nn.ReLU(True)
+        )
         self.memory_bank = {} # to store all frames memory
-
+        self.perm_bank = {} # to store frames to persist throughout clip/video 
+ 
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
         self.fusion_stages = fusion_stages
         self.image_size = image_size
-
-        self.use_cme_head = args.use_cme_head
-        self.cme_decision_window = args.cme_decision_window # minimum number of frames between each CME application
-        self.switch_mem = args.switch_mem
-
 
     def forward(self, samples, captions, targets):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels
                - captions: list[str]
+               - obj_classes: list[int]
                - targets:  list[dict]; during training contains masks, during inference frame Id info
+               - anchor: optional anchor masks of type tuple(list[dict(frame idx, cls), tensor.shape[1 x h x w])], [masks])
             It returns a dict with the following elements:
                - "pred_masks": Shape = [batch_size x num_queries x out_h x out_w]
         """
-
+        
         # samples: tensor B*T, C, H, W
         backbone_output: BackboneOutput = self.compute_backbone_output(samples, captions)
         B, T = backbone_output.B, backbone_output.T
         outputs = {"masks": []}
 
         for video_record in range(B):
+            # cls = obj_classes[video_record]
             if self.training or T==1: # T == 1 for pre-training, no propagation from memory bank
-                self.memory_bank, self.last_frame_cme_applied = {}, 0
+                self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
-                self.memory_bank, self.last_frame_cme_applied = {}, 0
+                self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
 
             for frame_idx in range(T):
                 idx = video_record * T + frame_idx
@@ -88,33 +91,8 @@ class SAMWISE(nn.Module):
 
                 current_vision_feats = backbone_output.get_current_feats(idx)
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  self.memory_bank)
-
-                if self.use_cme_head:
-                    # wait at least cme_decision_window frames between 2 CME applications
-                    if memory_idx - self.last_frame_cme_applied >= self.cme_decision_window-1 and memory_idx>self.cme_decision_window:
-                        # memory-less prediction
-                        decoder_out_no_mem_cme: DecoderOutput = self.compute_decoder_out_no_mem(backbone_output, idx)
-                        pred_cme_logits = self.conditional_memory_encoder(decoder_out_w_mem.obj_ptr.detach(),
-                                                                          decoder_out_no_mem_cme.early_obj_ptr.detach())
-
-                        if pred_cme_logits.argmax().item() == 1 and not self.training:  # not training and switch
-                            decoder_out_w_mem = self.apply_decision(decoder_out_w_mem, decoder_out_no_mem_cme)
-                            self.last_frame_cme_applied = memory_idx
-
-                        if self.training:
-                            # cme_label indicates whether memory features and memory-less features point to same object
-                            cme_label = get_same_object_labels(decoder_out_w_mem.masks.detach().cpu(),
-                                                               decoder_out_no_mem_cme.masks.detach().cpu(),
-                                                               decoder_out_no_mem_cme.object_score_logits.detach()).item()
-
-                            if 'pred_cme_logits' not in outputs:
-                                outputs['pred_cme_logits'] = []
-                                outputs["cme_label"] = []
-                            outputs["pred_cme_logits"].append(pred_cme_logits)
-                            outputs["cme_label"].append(cme_label)
-
-                mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes)
+                                                                                  self.memory_bank) 
+                mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes) 
                 self.memory_bank[memory_idx] = mem_dict_w_mem
                 outputs["masks"].append(decoder_out_w_mem.masks)
 
@@ -124,6 +102,46 @@ class SAMWISE(nn.Module):
         else:
             return {"pred_masks": masks.squeeze(1)}
 
+    def preprocess_anchor(self, anchor):
+        if(anchor):
+            for (f_idx, cls), mask in anchor.items():
+                if self.training: 
+                    f_idx = 0
+                if f_idx not in self.perm_bank:
+                    self.perm_bank[f_idx] = {}
+                self.perm_bank[f_idx][cls] = mask
+                # self.cls_mask[cls] = mask
+
+    def compute_mask_mem_dict(self, vision_feats, mask, feat_sizes):
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        elif mask.dim() == 3:
+            mask = mask.unsqueeze(0)
+        
+        if mask.shape[-2:] != self.image_size:
+            mask = F.interpolate(mask.float(), size=self.image_size, mode='bilinear').to(vision_feats[0].device)
+        
+        with torch.no_grad():
+            maskmem_features, maskmem_pos_enc = self.sam._encode_new_memory(
+                current_vision_feats=vision_feats,
+                feat_sizes=feat_sizes,
+                pred_masks_high_res=mask, 
+                is_mask_from_pts=False
+            )
+        
+        low_res = F.interpolate(mask, size=(256, 256), mode='bilinear')
+        low_res_logits = (low_res * 2 - 1) * 10.0
+        obj_ptr = F.adaptive_avg_pool2d(maskmem_features, (1, 1)).flatten(1)
+        
+        memory_entry = {
+            "maskmem_features": maskmem_features,
+            "maskmem_pos_enc": maskmem_pos_enc,
+            "pred_masks": low_res_logits,
+            "obj_ptr": obj_ptr,
+            "is_anchor": True
+        }
+
+        return memory_entry
 
     @staticmethod
     def preprocess_visual_features(samples, image_size):
@@ -136,17 +154,18 @@ class SAMWISE(nn.Module):
         samples = torch.stack([preprocess(x, image_size) for x in samples], dim=0)
         BT = (B, T)
         return samples, BT, orig_size
-
+    
     def preprocess_text_features(self, captions):
         batch_encoding_text = self.tokenizer(captions, add_special_tokens=True, padding=True)
         input_ids = torch.tensor(batch_encoding_text['input_ids']).cuda()
-        attention_mask = torch.tensor(batch_encoding_text['attention_mask']).eq(0).cuda()
-        text_encoder = self.text_encoder.model.encoder.sentence_encoder
-        has_pads = (torch.tensor(input_ids.device.type == "xla") or attention_mask.any())
-        x, encoder_embedding = text_encoder.forward_embedding(input_ids, None)
-        x = x * (1 - attention_mask.unsqueeze(-1).type_as(x) * has_pads.type_as(x))
-        txt = x.transpose(0, 1)  # B x T x C -> T x B x C
+        attention_mask = torch.tensor(batch_encoding_text['attention_mask']).cuda()
+        txt = self.text_encoder.embeddings(input_ids)
+        
+        expanded_attention = attention_mask[:, None, None, :].to(dtype=txt.dtype)
+        attention_mask = (1.0 - expanded_attention) * -10000.0
+
         return txt, attention_mask, input_ids
+    
     
     def compute_backbone_output(self, samples, captions):
         samples, BT, orig_size = self.preprocess_visual_features(samples, self.image_size)
@@ -174,8 +193,8 @@ class SAMWISE(nn.Module):
             current_vision_feats=current_vision_feats[-1:],
             current_vision_pos_embeds=current_vision_pos_embeds[-1:],
             feat_sizes=backbone_out.feat_sizes[-1:],
-            num_frames=memory_idx+1, # how many obj_ptr to take from mem
-            memory_bank=memory_bank
+            num_frames=memory_idx+1,
+            memory_bank=memory_bank,
         )
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
             backbone_features=pix_feat_with_mem,
@@ -183,20 +202,7 @@ class SAMWISE(nn.Module):
             motion_inputs=None,
             high_res_features=high_res_features,
         )
-        decoder_out.compute_mask(self.image_size, backbone_out.orig_size[idx])
-        return decoder_out
 
-    def compute_decoder_out_no_mem(self, backbone_out: BackboneOutput, idx: int):
-        current_vision_feats = backbone_out.get_current_feats(idx)
-        high_res_features = backbone_out.get_high_res_features(current_vision_feats)
-
-        pix_feat_no_mem = current_vision_feats[-1:][-1] + self.sam.no_mem_embed
-        pix_feat_no_mem = pix_feat_no_mem.permute(1, 2, 0).view(1, 256, 64, 64)
-        decoder_out: DecoderOutput = self.sam._forward_sam_heads(
-            backbone_features=pix_feat_no_mem,
-            text_inputs=backbone_out.state[idx:idx+1],
-            high_res_features=high_res_features,
-        )
         decoder_out.compute_mask(self.image_size, backbone_out.orig_size[idx])
         return decoder_out
 
@@ -213,8 +219,8 @@ class SAMWISE(nn.Module):
             "pred_masks": decoder_out.low_res_masks,
             "obj_ptr": decoder_out.obj_ptr,
         }
+        
         return memory_dict
-
     
     def apply_decision(self, decoder_out_w_mem: DecoderOutput, decoder_out_no_mem: DecoderOutput):
         high_res_masks = decoder_out_w_mem.high_res_masks
@@ -232,16 +238,16 @@ class SAMWISE(nn.Module):
     def forw_layer_list(start, end, layers, x, attention_mask=None):
         for idx in range(start, end):
             if attention_mask is not None:
-                x = layers[idx](x, encoder_padding_mask=attention_mask)
+                x = layers[idx](x, encoder_padding_mask=attention_mask)[0]
             else:
-                x = layers[idx](x)
+                x = layers[idx](x)[0]
         return x
 
     def _early_fusion_stage(self, T, samples, txt, attention_mask):
         vis = self.sam.image_encoder.trunk.patch_embed(samples)
         vis = vis + self.sam.image_encoder.trunk._get_pos_embed(vis.shape[1:3])
         print(vis.shape)
-
+        
         vis_outs = []
         fusion_stages_vis = [x+1 for x in self.fusion_stages_vis]
 
@@ -254,7 +260,7 @@ class SAMWISE(nn.Module):
             vis = self.forw_layer_list(i_v, fusion_vis[i+1], self.sam.image_encoder.trunk.blocks, vis)
             print(vis.shape)
             print("===================")
-            txt = self.forw_layer_list(i_t, fusion_txt[i+1], self.text_encoder.model.encoder.sentence_encoder.layers, txt, attention_mask)
+            txt = self.forw_layer_list(i_t, fusion_txt[i+1], self.text_encoder.encoder.layer, txt, attention_mask)
             if i in self.fusion_stages:
                 v = vis.clone()
                 t = txt.clone()
@@ -406,8 +412,12 @@ def build_samwise(args):
         get_roberta_weights()
     
     # build text encoder
-    roberta = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
-    text_encoder_embed_dim = roberta.model.encoder.lm_head.dense.out_features
+    # text_encoder = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
+    # text_encoder_embed_dim = text_encoder.model.encoder.lm_head.dense.out_features
+
+    # Build sentence encoder
+    text_encoder = AutoModel.from_pretrained('sentence-transformers/stsb-roberta-base')
+    text_encoder_embed_dim = text_encoder.encoder.layer[-1].output.dense.out_features
 
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[args.sam2_version]
     if not os.path.isfile(sam2_weights):
@@ -428,23 +438,18 @@ def build_samwise(args):
     sam.load_state_dict(state_dict, strict=False)
     sam_embed_dim = cfg.model.image_encoder.neck.backbone_channel_list[::-1][1:]
 
-    # build Conditional Memory Encoder
-    conditional_memory_encoder = ConditionalMemoryEncoder(sam.hidden_dim)
-
     ## Samwise
     model = SAMWISE(
         image_encoder_embed_dim=sam_embed_dim,
-        text_encoder=roberta,
+        text_encoder=text_encoder,
         text_encoder_embed_dim=text_encoder_embed_dim,
         fusion_stages_txt=args.fusion_stages_txt,
         fusion_stages=args.fusion_stages,
         image_size=sam.image_size,
         sam=sam,
-        conditional_memory_encoder=conditional_memory_encoder,
         adapter_dim= args.adapter_dim,
         args=args
     )
-
 
     # freeze all the weights except CMT adapter and Conditional Memory Encoder
     for param_name, param in model.named_parameters():
