@@ -11,7 +11,7 @@ import os
 import py3_wget
 from fairseq.models.roberta import RobertaModel
 from models.model_utils import BackboneOutput, DecoderOutput, get_same_object_labels
-from transformers import RobertaTokenizerFast
+from transformers import RobertaTokenizerFast, AutoModel, AutoTokenizer
 import torch.nn.functional as F
 
 
@@ -29,8 +29,8 @@ class SAMWISE(nn.Module):
         super().__init__()
 
         self.text_encoder = text_encoder
-        self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
-        # self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/stsb-roberta-base')
+        # self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
+        self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/stsb-roberta-base')
         self.sam = sam
         if args.motion_prompt: 
             # load nlp dict to identify verbs
@@ -56,7 +56,6 @@ class SAMWISE(nn.Module):
         )
         self.memory_bank = {} # to store all frames memory
         self.perm_bank = {} # to store frames to persist throughout clip/video 
-        # self.cls_mask = None # direct access to mask associated with each class
  
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
@@ -87,34 +86,18 @@ class SAMWISE(nn.Module):
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
                 self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
 
-            # anchor_cur = anchor_list[video_record]
-            # _ = self.preprocess_anchor(anchor_cur)
-
             for frame_idx in range(T):
                 idx = video_record * T + frame_idx
                 # use relative IDX in the clip
                 if self.training or T==1:  # T == 1 for pre-training, no propagation from memory bank
                     memory_idx = frame_idx
-                    
                 # use absolute IDX in the video
                 else:
                     memory_idx = targets[0]['frame_ids'][frame_idx]
 
                 current_vision_feats = backbone_output.get_current_feats(idx)
-                
-                # Inject persistent memory into memory bank
-                cur_memory = self.memory_bank
-                # try:
-                #     if self.perm_bank[memory_idx][cls].any():
-                #         init_mask = self.perm_bank[memory_idx][cls]
-                #         anchor_mem_dict = self.compute_mask_mem_dict(current_vision_feats, init_mask, backbone_output.feat_sizes)
-                #         anchor_entry = {memory_idx: anchor_mem_dict}
-                #         cur_memory = {**self.memory_bank, **anchor_entry} # concat the memory banks
-                # except (KeyError, IndexError, TypeError):
-                #     pass
-                
                 decoder_out_w_mem: DecoderOutput = self.compute_decoder_out_w_mem(backbone_output, idx, memory_idx,
-                                                                                  cur_memory) 
+                                                                                  self.memory_bank) 
                 mem_dict_w_mem = self.compute_memory_bank_dict(decoder_out_w_mem, current_vision_feats, backbone_output.feat_sizes) 
                 self.memory_bank[memory_idx] = mem_dict_w_mem
                 outputs["masks"].append(decoder_out_w_mem.masks)
@@ -189,6 +172,14 @@ class SAMWISE(nn.Module):
         txt = x.transpose(0, 1)  # B x T x C -> T x B x C
         return txt, attention_mask, input_ids
     
+    def preprocess_text_features2(self, captions):
+        batch_encoding_text = self.tokenizer(captions, padding=True, truncation=True, return_tensors='pt')
+        input_ids = torch.tensor(batch_encoding_text['input_ids']).cuda()
+        attention_mask = torch.tensor(batch_encoding_text['attention_mask']).cuda()
+        txt = self.text_encoder(**batch_encoding_text)
+        x = txt.tranpose(0, 1)
+        return x, attention_mask, input_ids
+    
     def compute_backbone_output(self, samples, captions):
         samples, BT, orig_size = self.preprocess_visual_features(samples, self.image_size)
         txt, attention_mask, input_ids = self.preprocess_text_features(captions)
@@ -250,9 +241,6 @@ class SAMWISE(nn.Module):
         
         return memory_dict
     
-    # =======================================================
-    # Need to change this to desciptor prompt and motion prompt
-    # =======================================================
     def extract_descriptor_prompts(self, captions, input_ids):
         docs = [self.nlp_dict(x) for x in captions]
         motion_map = torch.zeros(size=input_ids.shape).to(input_ids.device)
@@ -458,12 +446,12 @@ def build_samwise(args):
         get_roberta_weights()
     
     # build text encoder
-    roberta = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
-    text_encoder_embed_dim = roberta.model.encoder.lm_head.dense.out_features
+    # roberta = RobertaModel.from_pretrained(ROBERTA_WEIGHTS_PATH, checkpoint_file='model.pt') # need to change text encoder to medical
+    # text_encoder_embed_dim = roberta.model.encoder.lm_head.dense.out_features
 
     # Build sentence encoder
-    # text_encoder_embed_dim = model.encoder.layer[-1].output.dense.out_features
-    # text_encoder = AutoModel.from_pretrained('sentence-transformers/stsb-roberta-base')
+    text_encoder_embed_dim = model.encoder.layer[-1].output.dense.out_features
+    text_encoder = AutoModel.from_pretrained('sentence-transformers/stsb-roberta-base')
 
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[args.sam2_version]
     if not os.path.isfile(sam2_weights):
@@ -487,7 +475,7 @@ def build_samwise(args):
     ## Samwise
     model = SAMWISE(
         image_encoder_embed_dim=sam_embed_dim,
-        text_encoder=roberta,
+        text_encoder=text_encoder,
         text_encoder_embed_dim=text_encoder_embed_dim,
         fusion_stages_txt=args.fusion_stages_txt,
         fusion_stages=args.fusion_stages,
