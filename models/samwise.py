@@ -3,7 +3,6 @@ from torch import nn
 from util.misc import nested_tensor_from_videos_list, NestedTensor
 from models.CMT_adapter import CMT_adapter
 from hydra import compose, initialize
-import spacy
 from models.sam2.modeling.sam2_utils import preprocess
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
@@ -125,23 +124,22 @@ class SAMWISE(nn.Module):
         vis_outs, state = self._early_fusion_stage(T, samples, txt, attention_mask)
         print(vis_outs.shape)
         print(state.shape)
-        motion_state = torch.empty(1)
 
         # forward FPN
         backbone_out = self._forward_fpn(vis_outs)
         _, vision_feats, vision_pos_embeds, feat_sizes = self.sam._prepare_backbone_features(backbone_out)
 
         ## This is where the backbone output is prepared and store
-        ### Projection
-        ### vision_proj = v_pj(vis_outs)
-        ### text_proj = t_pj(state)
+        # Projection
+        # vision_proj = v_pj(vis_outs)
+        # text_proj = t_pj(state)
 
-        ### contrastive loss could be added here
+        ## contrastive loss could be added here
         # contrastive_loss = self.contrastive_loss(vision_proj, text_proj)
 
-        # out = BackboneOutput(B, T, orig_size, vision_proj, vision_pos_embeds, feat_sizes, text_proj, motion_state)
+        # out = BackboneOutput(B, T, orig_size, vision_proj, vision_pos_embeds, feat_sizes, text_proj)
 
-        out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state, motion_state)
+        out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state)
         return out
 
     def compute_decoder_out_w_mem(self, backbone_out: BackboneOutput, idx: int, memory_idx: int, memory_bank: dict):
@@ -225,7 +223,7 @@ class SAMWISE(nn.Module):
             txt = self.forw_layer_list(i_t, fusion_txt[i+1], self.text_encoder.encoder.layer, txt, attention_mask)
             if i in self.fusion_stages:
                 v = vis.clone()
-                t = txt.clone().transpose(0,1) # to T X B X C
+                t = txt.clone().transpose(0, 1) # to T X B X C
                 v, t = self.cmt_adapters[self.fusion_stages.index(i)](v.permute(0, 3, 1, 2), T, t)
                 vis = vis + v.permute(0, 2, 3, 1)
                 txt = txt + t.transpose(0,1)  # to B X T X C
