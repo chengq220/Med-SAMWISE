@@ -1,4 +1,3 @@
-#1. endovis2017
 endovis2017_category_dict = {
 	"Bipolar Forceps": 1,
 	"Prograsp Forceps": 2,
