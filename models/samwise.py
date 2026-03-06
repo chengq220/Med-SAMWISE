@@ -74,11 +74,10 @@ class SAMWISE(nn.Module):
         outputs = {"masks": []}
 
         for video_record in range(B):
-            # cls = obj_classes[video_record]
             if self.training or T==1: # T == 1 for pre-training, no propagation from memory bank
-                self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
+                self.memory_bank = {}
             elif targets[0]['frame_ids'][0] == 0:  # it's the first frame of a new video
-                self.perm_bank, self.cls_mask, self.memory_bank = {}, {}, {}
+                self.memory_bank = {}
 
             for frame_idx in range(T):
                 idx = video_record * T + frame_idx
@@ -101,47 +100,6 @@ class SAMWISE(nn.Module):
             return outputs
         else:
             return {"pred_masks": masks.squeeze(1)}
-
-    def preprocess_anchor(self, anchor):
-        if(anchor):
-            for (f_idx, cls), mask in anchor.items():
-                if self.training: 
-                    f_idx = 0
-                if f_idx not in self.perm_bank:
-                    self.perm_bank[f_idx] = {}
-                self.perm_bank[f_idx][cls] = mask
-                # self.cls_mask[cls] = mask
-
-    def compute_mask_mem_dict(self, vision_feats, mask, feat_sizes):
-        if mask.dim() == 2:
-            mask = mask.unsqueeze(0).unsqueeze(0)
-        elif mask.dim() == 3:
-            mask = mask.unsqueeze(0)
-        
-        if mask.shape[-2:] != self.image_size:
-            mask = F.interpolate(mask.float(), size=self.image_size, mode='bilinear').to(vision_feats[0].device)
-        
-        with torch.no_grad():
-            maskmem_features, maskmem_pos_enc = self.sam._encode_new_memory(
-                current_vision_feats=vision_feats,
-                feat_sizes=feat_sizes,
-                pred_masks_high_res=mask, 
-                is_mask_from_pts=False
-            )
-        
-        low_res = F.interpolate(mask, size=(256, 256), mode='bilinear')
-        low_res_logits = (low_res * 2 - 1) * 10.0
-        obj_ptr = F.adaptive_avg_pool2d(maskmem_features, (1, 1)).flatten(1)
-        
-        memory_entry = {
-            "maskmem_features": maskmem_features,
-            "maskmem_pos_enc": maskmem_pos_enc,
-            "pred_masks": low_res_logits,
-            "obj_ptr": obj_ptr,
-            "is_anchor": True
-        }
-
-        return memory_entry
 
     @staticmethod
     def preprocess_visual_features(samples, image_size):
@@ -239,12 +197,10 @@ class SAMWISE(nn.Module):
         for idx in range(start, end):
             if attention_mask is not None:
                 x = layers[idx](x, attention_mask)
-                if(type(x) is tuple):
-                    x = x[0]
             else:
                 x = layers[idx](x)
-                if(type(x) is tuple):
-                    x = x[0]
+            if(type(x) is tuple):
+                x = x[0]
         return x
 
     def _early_fusion_stage(self, T, samples, txt, attention_mask):
@@ -270,7 +226,6 @@ class SAMWISE(nn.Module):
 
             vis_outs.append(vis.permute(0, 3, 1, 2))
 
-        # txt = txt.permute(1, 0, 2)  # LND -> NLD
         state = txt[:,0]
         if T > 1:
             state = state.repeat_interleave(T, 0)

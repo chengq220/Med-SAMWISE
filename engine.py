@@ -48,6 +48,13 @@ def train_one_epoch(model: torch.nn.Module,
         seg_loss = loss_masks(torch.cat(outputs["masks"]), targets, num_frames=samples.tensors.shape[1])
         losses.update(seg_loss)
 
+        # Contrastive Loss
+        weight = torch.tensor([1., 2.]).to(device)
+        CME_loss = F.cross_entropy(torch.cat(outputs["pred_cme_logits"]), ignore_index=-1,
+                                    target=torch.tensor(outputs["cme_label"]).long().to(device),
+                                    weight=weight)
+        losses.update({"Contrastive_Loss": CME_loss if not CME_loss.isnan() else torch.tensor(0).to(device)})
+
         loss_dict = losses
         losses = sum(loss_dict[k] for k in loss_dict.keys())
         # reduce losses over all GPUs for logging purposes
