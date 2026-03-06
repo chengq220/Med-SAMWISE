@@ -22,12 +22,11 @@
 #         --HSA
 # done
 
-
 for seq in seq2 seq5 seq9 seq15; do
     python inference.py \
         --sam2_version 'med' \
-        --input_path "data/endovis2017/valid/JPEGImages/$seq" \
-        --mask_input "data/endovis2017/valid/VOS/$seq" \
+        --input_path "data/endovis2018/valid/JPEGImages/$seq" \
+        --mask_input "data/endovis2018/valid/VOS/$seq" \
         --resume output/endovis2018_med/checkpoint0002.pth \
         --text_prompts 'all' \
         --num_frames 8 \

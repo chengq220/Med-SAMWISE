@@ -49,11 +49,8 @@ def train_one_epoch(model: torch.nn.Module,
         losses.update(seg_loss)
 
         # Contrastive Loss
-        weight = torch.tensor([1., 2.]).to(device)
-        CME_loss = F.cross_entropy(torch.cat(outputs["pred_cme_logits"]), ignore_index=-1,
-                                    target=torch.tensor(outputs["cme_label"]).long().to(device),
-                                    weight=weight)
-        losses.update({"Contrastive_Loss": CME_loss if not CME_loss.isnan() else torch.tensor(0).to(device)})
+        # TODO: add contrastive loss here, for now just set it to 0
+        losses.update({"Contrastive_Loss": torch.tensor(0).to(device)})
 
         loss_dict = losses
         losses = sum(loss_dict[k] for k in loss_dict.keys())
@@ -85,7 +82,6 @@ def train_one_epoch(model: torch.nn.Module,
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
-
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

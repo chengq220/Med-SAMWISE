@@ -40,16 +40,8 @@ class SAMWISE(nn.Module):
                                         adapter_channels=adapter_dim,
                                         HSA_patch_size=args.HSA_patch_size[i] if len(args.HSA_patch_size) > 1 else args.HSA_patch_size[0],
                                         args=args))
-        self.mask_fuse = nn.Sequential(
-                    nn.Conv2d(512, 256, kernel_size=1, stride=1, padding=0, bias=False),
-                    nn.BatchNorm2d(256), 
-                    nn.ReLU(True), 
-                    nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0, bias=False),
-                    nn.BatchNorm2d(256),
-                    nn.ReLU(True)
-        )
+            
         self.memory_bank = {} # to store all frames memory
-        self.perm_bank = {} # to store frames to persist throughout clip/video 
  
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
@@ -131,11 +123,24 @@ class SAMWISE(nn.Module):
         B, T = BT
 
         vis_outs, state = self._early_fusion_stage(T, samples, txt, attention_mask)
+        print(vis_outs.shape)
+        print(state.shape)
         motion_state = torch.empty(1)
 
         # forward FPN
         backbone_out = self._forward_fpn(vis_outs)
         _, vision_feats, vision_pos_embeds, feat_sizes = self.sam._prepare_backbone_features(backbone_out)
+
+        ## This is where the backbone output is prepared and store
+        ### Projection
+        ### vision_proj = v_pj(vis_outs)
+        ### text_proj = t_pj(state)
+
+        ### contrastive loss could be added here
+        # contrastive_loss = self.contrastive_loss(vision_proj, text_proj)
+
+        # out = BackboneOutput(B, T, orig_size, vision_proj, vision_pos_embeds, feat_sizes, text_proj, motion_state)
+
         out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state, motion_state)
         return out
 
@@ -154,6 +159,7 @@ class SAMWISE(nn.Module):
             num_frames=memory_idx+1,
             memory_bank=memory_bank,
         )
+
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
             backbone_features=pix_feat_with_mem,
             text_inputs=backbone_out.state[idx:idx+1],

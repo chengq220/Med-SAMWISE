@@ -1,5 +1,5 @@
 """
-Endovis2017 data loader
+Endovis data loader
 """
 from pathlib import Path
 
