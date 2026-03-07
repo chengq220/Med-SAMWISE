@@ -23,9 +23,11 @@ class SAMWISE(nn.Module):
                  image_size,
                  sam,
                  adapter_dim,
-                 args):
+                 args,
+                 proj_dim = 512
+        ):
         super().__init__()
-
+        
         self.text_encoder = text_encoder
         self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/stsb-roberta-base')
         self.sam = sam
@@ -41,20 +43,33 @@ class SAMWISE(nn.Module):
                                         args=args))
             
         self.memory_bank = {} # to store all frames memory
- 
         self.fusion_stages_txt = fusion_stages_txt
         self.fusion_stages_vis = sam.image_encoder.trunk.stage_ends
         self.fusion_stages = fusion_stages
         self.image_size = image_size
+
+        self.vis_proj = nn.Sequential( # working on this
+            nn.Conv2d(adapter_dim, 128, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 64, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((8, 8)),  # (B, 64, 8, 8)
+            nn.Flatten(),              # (B, 64*8*8)
+            nn.Linear(64*8*8, proj_dim)
+        )
+    
+        self.text_proj = nn.Sequential(
+            nn.Linear(text_encoder_embed_dim, proj_dim),
+            nn.ReLU(),
+            nn.Linear(proj_dim, proj_dim),
+        )
 
     def forward(self, samples, captions, targets):
         """The forward expects a NestedTensor, which consists of:
                - samples.tensors: image sequences, of shape [num_frames x 3 x H x W]
                - samples.mask: a binary mask of shape [num_frames x H x W], containing 1 on padded pixels
                - captions: list[str]
-               - obj_classes: list[int]
                - targets:  list[dict]; during training contains masks, during inference frame Id info
-               - anchor: optional anchor masks of type tuple(list[dict(frame idx, cls), tensor.shape[1 x h x w])], [masks])
             It returns a dict with the following elements:
                - "pred_masks": Shape = [batch_size x num_queries x out_h x out_w]
         """
@@ -88,6 +103,8 @@ class SAMWISE(nn.Module):
 
         masks = torch.cat(outputs["masks"])
         if self.training:
+            outputs["txt_proj"] = backbone_output.get_txt_proj()
+            outputs["vis_proj"] = backbone_output.get_vis_proj()
             return outputs
         else:
             return {"pred_masks": masks.squeeze(1)}
@@ -122,24 +139,16 @@ class SAMWISE(nn.Module):
         B, T = BT
 
         vis_outs, state = self._early_fusion_stage(T, samples, txt, attention_mask)
-        print(vis_outs.shape)
-        print(state.shape)
 
         # forward FPN
         backbone_out = self._forward_fpn(vis_outs)
         _, vision_feats, vision_pos_embeds, feat_sizes = self.sam._prepare_backbone_features(backbone_out)
 
-        ## This is where the backbone output is prepared and store
-        # Projection
-        # vision_proj = v_pj(vis_outs)
-        # text_proj = t_pj(state)
+        ## Compute the projection onto the same space and ensure alignment
+        vis_proj = self.vis_proj(backbone_out["vision_features"])
+        txt_proj = self.text_proj(state)
 
-        ## contrastive loss could be added here
-        # contrastive_loss = self.contrastive_loss(vision_proj, text_proj)
-
-        # out = BackboneOutput(B, T, orig_size, vision_proj, vision_pos_embeds, feat_sizes, text_proj)
-
-        out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state)
+        out = BackboneOutput(B, T, orig_size, vision_feats, vision_pos_embeds, feat_sizes, state, vis_proj, txt_proj)
         return out
 
     def compute_decoder_out_w_mem(self, backbone_out: BackboneOutput, idx: int, memory_idx: int, memory_bank: dict):

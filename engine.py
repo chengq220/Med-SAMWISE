@@ -8,6 +8,7 @@ import util.misc as utils
 from torch.nn import functional as F
 from models.segmentation import loss_masks
 from PIL import Image
+from models.contrastive import ContrastiveLoss
 
 
 def train_one_epoch(model: torch.nn.Module,
@@ -19,6 +20,8 @@ def train_one_epoch(model: torch.nn.Module,
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 50
+
+    contrastive_loss = ContrastiveLoss().to(device)
 
     step=0
 
@@ -49,8 +52,15 @@ def train_one_epoch(model: torch.nn.Module,
         losses.update(seg_loss)
 
         # Contrastive Loss
-        # TODO: add contrastive loss here, for now just set it to 0
-        losses.update({"Contrastive_Loss": torch.tensor(0).to(device)})
+        vis_proj = outputs["vis_proj"]
+        vis_proj = F.normalize(vis_proj, dim=-1)
+        txt_proj = outputs["txt_proj"]
+        txt_proj = F.normalize(txt_proj, dim=-1)
+        c_loss_t2i = contrastive_loss(query=txt_proj, key=vis_proj)  # Text 2 Image
+        c_loss_i2t = contrastive_loss(query=vis_proj, key=txt_proj)  # Image 2 Text
+    
+        c_loss = (c_loss_i2t + c_loss_t2i) / 2
+        losses.update({"Contrastive_Loss": c_loss})
 
         loss_dict = losses
         losses = sum(loss_dict[k] for k in loss_dict.keys())
