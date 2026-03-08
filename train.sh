@@ -9,4 +9,4 @@ python main.py \
     --epochs 5 \
     --batch_size 1  \
     --HSA \
-    --lr 1e-5
+    --lr 1e-4

@@ -59,7 +59,7 @@ def train_one_epoch(model: torch.nn.Module,
         c_loss_t2i = contrastive_loss(query=txt_proj, key=vis_proj)  # Text 2 Image
         c_loss_i2t = contrastive_loss(query=vis_proj, key=txt_proj)  # Image 2 Text
     
-        c_loss = (c_loss_i2t + c_loss_t2i) / 2
+        c_loss = 0.5 * (c_loss_i2t + c_loss_t2i) / 2
         losses.update({"Contrastive_Loss": c_loss})
 
         loss_dict = losses
