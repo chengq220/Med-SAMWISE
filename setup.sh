@@ -13,18 +13,14 @@ cd data
 gdown --fuzzy "https://drive.google.com/file/d/1f3qdi7J2GsHGDmxdc4vXaf6ZsFGa_vOH/view?usp=sharing"
 tar -xvf endovis2018_new.tar
 rm endovis2018_new.tar
-gdown --fuzzy "https://drive.google.com/file/d/1XTTdrPPy_nndbqd0_bX1eQBI2_hgCGMq/view?usp=sharing"
-tar -xvf endovis2017.tar
-rm endovis2017.tar
+# gdown --fuzzy "https://drive.google.com/file/d/1XTTdrPPy_nndbqd0_bX1eQBI2_hgCGMq/view?usp=sharing"
+# tar -xvf endovis2017.tar
+# rm endovis2017.tar
 cd ..
 
 #Download pretrain-models
 mkdir pretrain
 cd pretrain
-wget "https://dl.fbaipublicfiles.com/biolm/RoBERTa-base-PM-fairseq.tar.gz"
-tar -xzvf RoBERTa-base-PM-fairseq.tar.gz --no-same-owner
-rm RoBERTa-base-PM-fairseq.tar.gz
-
 # sam2.1_hiera_s_endo18.pth
 gdown --fuzzy "https://drive.google.com/file/d/1DyrrLKst1ZQwkgKM7BWCCwLxSXAgOcMI/view?usp=sharing"
 

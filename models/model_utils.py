@@ -44,7 +44,8 @@ class BackboneOutput:
     vision_pos_embeds: list = None
     feat_sizes: list = None
     state: Tensor = None
-    motion_state: Tensor = None
+    vis_proj: Tensor = None
+    txt_proj: Tensor = None
 
     def get_current_feats(self, idx):
         current_vision_feats = [x[:, idx:idx + 1, :] for x in self.vision_feats]
@@ -60,11 +61,18 @@ class BackboneOutput:
             for x, s in zip(current_vision_feats[:-1], self.feat_sizes[:-1])
         ]
         return high_res_features
+    
+    def get_vis_proj(self):
+        return self.vis_proj
+    
+    def get_txt_proj(self):
+        return self.txt_proj
 
     def move_to_cpu(self):
         self.vision_feats = [x.cpu() for x in self.vision_feats]
         self.vision_pos_embeds = [x.cpu() for x in self.vision_pos_embeds]
         return self
+
 
 
 def get_same_object_labels(masks, counterpart_masks, counter_logits=None):

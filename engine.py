@@ -8,6 +8,7 @@ import util.misc as utils
 from torch.nn import functional as F
 from models.segmentation import loss_masks
 from PIL import Image
+from models.contrastive import ContrastiveLoss
 
 
 def train_one_epoch(model: torch.nn.Module,
@@ -19,6 +20,8 @@ def train_one_epoch(model: torch.nn.Module,
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 50
+
+    contrastive_loss = ContrastiveLoss().to(device)
 
     step=0
 
@@ -35,7 +38,7 @@ def train_one_epoch(model: torch.nn.Module,
             key = (0, cls[idx])
             anchor[key] = init_frames_mask[idx]
             batch_anchor.append(anchor)
-        outputs = model(samples, captions, cls, targets, (batch_anchor, init_frames_mask))
+        outputs = model(samples, captions, targets)
         
         # saving mask during training to check what's being learned
         save_mask = outputs["masks"][0].squeeze().detach().cpu().numpy()
@@ -47,6 +50,17 @@ def train_one_epoch(model: torch.nn.Module,
         losses = {}
         seg_loss = loss_masks(torch.cat(outputs["masks"]), targets, num_frames=samples.tensors.shape[1])
         losses.update(seg_loss)
+
+        # Contrastive Loss
+        vis_proj = outputs["vis_proj"]
+        vis_proj = F.normalize(vis_proj, dim=-1)
+        txt_proj = outputs["txt_proj"]
+        txt_proj = F.normalize(txt_proj, dim=-1)
+        c_loss_t2i = contrastive_loss(query=txt_proj, key=vis_proj)  # Text 2 Image
+        c_loss_i2t = contrastive_loss(query=vis_proj, key=txt_proj)  # Image 2 Text
+    
+        c_loss = 0.5 * (c_loss_i2t + c_loss_t2i) / 2
+        losses.update({"Contrastive_Loss": c_loss})
 
         loss_dict = losses
         losses = sum(loss_dict[k] for k in loss_dict.keys())
@@ -78,7 +92,6 @@ def train_one_epoch(model: torch.nn.Module,
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
-
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

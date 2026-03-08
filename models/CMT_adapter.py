@@ -6,7 +6,6 @@ from .sam2.utils.misc import trunc_normal_
 from models.sam2.modeling.sam2_utils import LayerNorm2d
 
 class CMT_adapter(nn.Module):
-
     def __init__(self,
                  in_channels_vis,
                  in_channels_txt,

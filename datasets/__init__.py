@@ -2,8 +2,7 @@ import torch.utils.data
 import torchvision
 
 import datasets.transforms_video as T
-from .endovis2017 import build as build_endovis2017
-# from .endovis2017_coco import build as build_endovis2017
+from .endovis import build as build_endovis
 
 def get_coco_api_from_dataset(dataset):
     for _ in range(10):
@@ -15,8 +14,8 @@ def get_coco_api_from_dataset(dataset):
 
 def build_dataset(dataset_file: str, image_set: str, args):
     if dataset_file == 'endovis2017':
-        return build_endovis2017(image_set, args)
+        return build_endovis(image_set, args)
     if dataset_file == 'endovis2018':
-        return build_endovis2017(image_set, args)
+        return build_endovis(image_set, args)
 
     raise ValueError(f'dataset {dataset_file} not supported')
